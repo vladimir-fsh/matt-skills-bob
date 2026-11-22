@@ -11,7 +11,8 @@
     "wayfinder",
     "implement",
     "implement-spec",
-    "grill-me"
+    "grill-me",
+    "triage"
   ],
   "descriptionSuffix": " Use only when a playbook or the user names this skill."
 }
