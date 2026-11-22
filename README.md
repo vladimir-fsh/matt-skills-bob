@@ -1,8 +1,8 @@
 # matt-skills-bob
 
-[Matt Pocock's skills](https://github.com/mattpocock/skills) for Claude Code and Codex, regenerated from his repository every day, with one change: a playbook can run ten of the skills that upstream reserves for the user.
+[Matt Pocock's skills](https://github.com/mattpocock/skills) for Claude Code and Codex, regenerated from his repository every day, with one change: a playbook can run nine of the skills that upstream reserves for the user.
 
-Upstream marks `to-questionnaire`, `handoff`, `grill-me`, `grill-with-docs`, `to-spec`, `to-tickets`, `wayfinder`, `implement`, `implement-spec` and `triage` with `disable-model-invocation: true`, so only you can start them. This port removes that flag from those ten and ends each description with "Use only when a playbook or the user names this skill." Everything else is copied byte for byte.
+Upstream marks `to-questionnaire`, `handoff`, `grill-me`, `grill-with-docs`, `to-spec`, `to-tickets`, `wayfinder`, `implement` and `implement-spec` with `disable-model-invocation: true`, so only you can start them. This port removes that flag from those nine and ends each description with "Use only when a playbook or the user names this skill." Everything else is copied byte for byte.
 
 This is an unofficial port. The skills are Matt Pocock's work, under his MIT license.
 
