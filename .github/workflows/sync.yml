@@ -1,0 +1,55 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Regenerate plugin/ from mattpocock/skills
+        id: port
+        run: |
+          status=0
+          python3 scripts/port.py --ref main --report "$RUNNER_TEMP/report.md" || status=$?
+          # 2 means plugin/ was written and an unlock entry needs a person.
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Open a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.port.outputs.status }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing this plugin carries changed upstream."
+            exit 0
+          fi
+          commit=$(python3 -c 'import json; print(json.load(open("port.json"))["commit"][:7])')
+          branch="sync/matt-$commit"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "A pull request for $commit already exists."
+            exit 0
+          fi
+          title="Sync mattpocock/skills @ $commit"
+          draft=""
+          if [ "$STATUS" -eq 2 ]; then
+            title="$title (needs a person)"
+            draft="--draft"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add -A
+          git commit -m "$title"
+          git push origin "$branch"
+          gh pr create $draft --title "$title" --body-file "$RUNNER_TEMP/report.md"

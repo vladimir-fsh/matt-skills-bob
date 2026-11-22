@@ -1,0 +1,21 @@
+{
+  "name": "matt-skills-bob",
+  "interface": {
+    "displayName": "matt-skills-bob"
+  },
+  "plugins": [
+    {
+      "name": "matt",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": ["CODEX"]
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

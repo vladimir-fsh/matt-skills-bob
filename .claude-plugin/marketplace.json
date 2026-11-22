@@ -1,0 +1,17 @@
+{
+  "name": "matt-skills-bob",
+  "owner": {
+    "name": "vladimir-fsh"
+  },
+  "metadata": {
+    "description": "Matt Pocock's skills, regenerated from upstream so that playbooks can run them."
+  },
+  "plugins": [
+    {
+      "name": "matt",
+      "source": "./plugin",
+      "description": "Unofficial port of mattpocock/skills in which a playbook can run the spec, ticket and implement skills that upstream reserves for the user.",
+      "category": "productivity"
+    }
+  ]
+}
