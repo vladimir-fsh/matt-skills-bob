@@ -4,7 +4,8 @@
 plugin/skills and plugin/LICENSE are output, never edited by hand. Every skill
 the upstream manifest lists is copied as it is. The skills port.json names in
 "unlock" lose their disable-model-invocation flag and gain a sentence at the
-end of their description, so that a playbook can run them.
+end of their description, so that a playbook can run them. The ones it names
+in "lock" gain the flag, so that only the user can start them.
 """
 
 import argparse
@@ -29,6 +30,8 @@ LOCK = re.compile(r"^disable-model-invocation:[ \t]*true[ \t]*\r?\n", re.MULTILI
 DESCRIPTION = re.compile(r"^description:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
 # A suffix made of these characters needs no escaping in any YAML scalar style.
 PLAIN_SUFFIX = re.compile(r"[A-Za-z0-9 ,.()-]*")
+LOCK_LINE = "disable-model-invocation: true\n"
+EXECUTABLE = 0o111
 
 
 class PortError(Exception):
@@ -41,6 +44,7 @@ class Report:
     removed: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
     unlocked: list[str] = field(default_factory=list)
+    locked: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
 
@@ -95,11 +99,38 @@ def unlock_frontmatter(text, suffix):
     return text[:frontmatter.start(1)] + header + text[frontmatter.end(1):], None
 
 
+def lock_frontmatter(text):
+    """Return the skill text only the user can start, or the reason it cannot be made."""
+    frontmatter = FRONTMATTER.match(text)
+    if not frontmatter:
+        return None, "has no frontmatter"
+    if LOCK.search(frontmatter.group(1)):
+        return None, "is already locked upstream; drop it from lock"
+    return text[:frontmatter.end(1)] + LOCK_LINE + text[frontmatter.end(1):], None
+
+
+def is_locked(text):
+    frontmatter = FRONTMATTER.match(text)
+    return bool(frontmatter and LOCK.search(frontmatter.group(1)))
+
+
+def called_through_skill_tool(name, text):
+    return re.search(r'Skill tool[^.\n]{0,80}["`]' + re.escape(name) + r'["`]', text) is not None
+
+
+def stored_mode(path):
+    """Git keeps only the executable bit, so nothing else about a mode may count as a difference."""
+    return 0o755 if path.stat().st_mode & EXECUTABLE else 0o644
+
+
 def build(upstream, config):
     """Return the generated files as {path: (bytes, mode)}, the report, and the upstream version."""
     manifest = read_json(upstream / config["manifest"])
     files, report = {}, Report()
     locked = set(config["unlock"])
+    hidden = set(config.get("lock", []))
+    if locked & hidden:
+        raise PortError(f"both unlock and lock name {', '.join(sorted(locked & hidden))}")
     for listed in manifest["skills"]:
         source = upstream / listed
         name = source.name
@@ -110,7 +141,16 @@ def build(upstream, config):
         for path in sorted(source.rglob("*")):
             if path.is_file() and not path.is_symlink():
                 relative = f"skills/{name}/{path.relative_to(source).as_posix()}"
-                files[relative] = (path.read_bytes(), path.stat().st_mode & 0o777)
+                files[relative] = (path.read_bytes(), stored_mode(path))
+        if name in hidden:
+            hidden.discard(name)
+            data, mode = files[f"skills/{name}/SKILL.md"]
+            text, problem = lock_frontmatter(data.decode("utf-8"))
+            if problem:
+                report.problems.append(f"{name} {problem}")
+            else:
+                files[f"skills/{name}/SKILL.md"] = (text.encode("utf-8"), mode)
+                report.locked.append(name)
         if name in locked:
             locked.discard(name)
             data, mode = files[f"skills/{name}/SKILL.md"]
@@ -121,9 +161,22 @@ def build(upstream, config):
                 files[f"skills/{name}/SKILL.md"] = (text.encode("utf-8"), mode)
                 report.unlocked.append(name)
     report.problems += [f"{name} is not a skill upstream ships; drop it from unlock" for name in sorted(locked)]
+    report.problems += [f"{name} is not a skill upstream ships; drop it from lock" for name in sorted(hidden)]
+    report.problems += stranded_calls(files, report.locked)
     license_file = upstream / "LICENSE"
-    files["LICENSE"] = (license_file.read_bytes(), license_file.stat().st_mode & 0o777)
+    files["LICENSE"] = (license_file.read_bytes(), stored_mode(license_file))
     return files, report, manifest["version"]
+
+
+def stranded_calls(files, locked_here):
+    """Name each skill the model can start that calls one this port took away from the model."""
+    skills = {path.split("/")[1]: data.decode("utf-8") for path, (data, _) in files.items() if path.endswith("/SKILL.md")}
+    return [
+        f"{caller} calls {name}, which lock keeps from the model; drop {name} from lock"
+        for name in locked_here
+        for caller, text in sorted(skills.items())
+        if caller != name and not is_locked(text) and called_through_skill_tool(name, text)
+    ]
 
 
 def current_files():
@@ -132,7 +185,7 @@ def current_files():
         path = PLUGIN / entry
         for item in [path] if path.is_file() else sorted(path.rglob("*")) if path.is_dir() else []:
             if item.is_file():
-                files[item.relative_to(PLUGIN).as_posix()] = (item.read_bytes(), item.stat().st_mode & 0o777)
+                files[item.relative_to(PLUGIN).as_posix()] = (item.read_bytes(), stored_mode(item))
     return files
 
 
@@ -188,6 +241,7 @@ def render(report, old, new, upstream_version, version):
         ("Removed skills", report.removed),
         ("Changed skills", report.changed),
         ("Unlocked for playbooks", report.unlocked),
+        ("Kept for the user only", report.locked),
     ]
     moved = old[:7] if old == new else f"{old[:7]} -> {new[:7]}"
     lines = [f"mattpocock/skills {moved} (upstream {upstream_version}), plugin version {version}", ""]

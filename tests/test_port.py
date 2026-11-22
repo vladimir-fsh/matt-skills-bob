@@ -93,6 +93,45 @@ class Build(unittest.TestCase):
             port.build(source, config([]))
 
 
+class Lock(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name)
+
+    def test_a_locked_skill_gains_the_flag_at_the_end_of_its_frontmatter(self):
+        text, problem = port.lock_frontmatter(OPEN)
+        self.assertIsNone(problem)
+        self.assertEqual(text, "---\nname: tdd\ndescription: Test first.\ndisable-model-invocation: true\n---\n\nBody.\n")
+        self.assertEqual(port.lock_frontmatter(LOCKED), (None, "is already locked upstream; drop it from lock"))
+
+    def test_only_named_skills_are_locked_and_stale_names_are_reported(self):
+        source = upstream(self.root, {"skills/a/tdd": OPEN, "skills/a/pr": OPEN, "skills/a/to-spec": LOCKED})
+
+        files, report, _ = port.build(source, {**config([]), "lock": ["pr", "to-spec", "gone"]})
+
+        self.assertIn(b"disable-model-invocation: true", files["skills/pr/SKILL.md"][0])
+        self.assertEqual(files["skills/tdd/SKILL.md"][0], OPEN.encode())
+        self.assertEqual((report.locked, report.problems), (["pr"], [
+            "to-spec is already locked upstream; drop it from lock",
+            "gone is not a skill upstream ships; drop it from lock",
+        ]))
+
+    def test_locking_a_skill_that_a_startable_skill_calls_is_a_problem(self):
+        caller = OPEN.replace("Body.", 'Call the Skill tool with "pr" once done.')
+        manual = LOCKED.replace("Body.", 'Call the Skill tool with "pr" once done.')
+        source = upstream(self.root, {"skills/a/tdd": caller, "skills/a/pr": OPEN, "skills/a/to-spec": manual})
+
+        _, report, _ = port.build(source, {**config([]), "lock": ["pr"]})
+
+        self.assertEqual(report.problems, ["tdd calls pr, which lock keeps from the model; drop pr from lock"])
+
+    def test_a_skill_cannot_be_both_unlocked_and_locked(self):
+        source = upstream(self.root, {"skills/a/tdd": OPEN})
+        with self.assertRaises(port.PortError):
+            port.build(source, {**config(["tdd"]), "lock": ["tdd"]})
+
+
 class Compare(unittest.TestCase):
     def test_names_added_removed_and_changed_skills(self):
         before = {"LICENSE": (b"old", 0o644), "skills/a/SKILL.md": (b"1", 0o644), "skills/b/SKILL.md": (b"1", 0o644), "skills/b/x.md": (b"1", 0o644)}
