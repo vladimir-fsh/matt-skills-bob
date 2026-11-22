@@ -2,10 +2,12 @@
 """Generate plugin/ from mattpocock/skills.
 
 plugin/skills and plugin/LICENSE are output, never edited by hand. Every skill
-the upstream manifest lists is copied as it is. The skills port.json names in
-"unlock" lose their disable-model-invocation flag and gain a sentence at the
-end of their description, so that a playbook can run them. The ones it names
-in "lock" gain the flag, so that only the user can start them.
+the upstream manifest lists is copied as it is, except for one line: whether an
+agent may start it. The playbook sets port.json links to decide that. A skill
+they name, or one such a skill calls, loses its disable-model-invocation flag
+and gains a sentence at the end of its description. Every other skill carries
+the flag, so only the user can start it. Codex reads the same decision from
+each skill's agents/openai.yaml, which is rewritten to match.
 """
 
 import argparse
@@ -31,6 +33,9 @@ DESCRIPTION = re.compile(r"^description:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
 # A suffix made of these characters needs no escaping in any YAML scalar style.
 PLAIN_SUFFIX = re.compile(r"[A-Za-z0-9 ,.()-]*")
 LOCK_LINE = "disable-model-invocation: true\n"
+CODEX_AGENT_FILE = "agents/openai.yaml"
+CODEX_IMPLICIT = re.compile(r"^([ \t]*allow_implicit_invocation:[ \t]*)(?:true|false)[ \t]*$", re.MULTILINE)
+CODEX_RESERVED = "policy:\n  allow_implicit_invocation: false\n"
 EXECUTABLE = 0o111
 
 
@@ -78,12 +83,7 @@ def export(cache, commit, target):
 def unlock_frontmatter(text, suffix):
     """Return the skill text a playbook can run, or the reason it cannot be made."""
     frontmatter = FRONTMATTER.match(text)
-    if not frontmatter:
-        return None, "has no frontmatter"
-    header = frontmatter.group(1)
-    header, flags = LOCK.subn("", header)
-    if not flags:
-        return None, "is not locked upstream; drop it from unlock"
+    header = LOCK.sub("", frontmatter.group(1))
     description = DESCRIPTION.search(header)
     if not description:
         return None, "has no one-line description"
@@ -104,9 +104,18 @@ def lock_frontmatter(text):
     frontmatter = FRONTMATTER.match(text)
     if not frontmatter:
         return None, "has no frontmatter"
-    if LOCK.search(frontmatter.group(1)):
-        return None, "is already locked upstream; drop it from lock"
     return text[:frontmatter.end(1)] + LOCK_LINE + text[frontmatter.end(1):], None
+
+
+def codex_policy(text, startable):
+    """Return the Codex agent file that lets Codex start the skill unasked, or forbids it; or why it cannot be made."""
+    if CODEX_IMPLICIT.search(text):
+        return CODEX_IMPLICIT.sub(lambda found: found.group(1) + ("true" if startable else "false"), text), None
+    if startable:
+        return text, None
+    if re.search(r"^policy:", text, re.MULTILINE):
+        return None, "has a Codex policy block this port cannot extend"
+    return text.rstrip("\n") + "\n" + CODEX_RESERVED, None
 
 
 def is_locked(text):
@@ -123,60 +132,84 @@ def stored_mode(path):
     return 0o755 if path.stat().st_mode & EXECUTABLE else 0o644
 
 
-def build(upstream, config):
+def startable_skills(used, texts):
+    """Return the skills an agent must be able to start: the ones playbooks name and the ones those call."""
+    startable, queue = set(), sorted(used)
+    while queue:
+        name = queue.pop()
+        if name in startable:
+            continue
+        startable.add(name)
+        queue += [callee for callee in texts if callee != name and called_through_skill_tool(callee, texts[name])]
+    return startable
+
+
+def build(upstream, config, used):
     """Return the generated files as {path: (bytes, mode)}, the report, and the upstream version."""
     manifest = read_json(upstream / config["manifest"])
-    files, report = {}, Report()
-    locked = set(config["unlock"])
-    hidden = set(config.get("lock", []))
-    if locked & hidden:
-        raise PortError(f"both unlock and lock name {', '.join(sorted(locked & hidden))}")
+    files, report, texts = {}, Report(), {}
     for listed in manifest["skills"]:
         source = upstream / listed
         name = source.name
         if not (source / "SKILL.md").is_file():
             raise PortError(f"upstream lists {listed}, which has no SKILL.md")
-        if f"skills/{name}/SKILL.md" in files:
+        if name in texts:
             raise PortError(f"upstream lists two skills named {name}")
         for path in sorted(source.rglob("*")):
             if path.is_file() and not path.is_symlink():
-                relative = f"skills/{name}/{path.relative_to(source).as_posix()}"
-                files[relative] = (path.read_bytes(), stored_mode(path))
-        if name in hidden:
-            hidden.discard(name)
-            data, mode = files[f"skills/{name}/SKILL.md"]
-            text, problem = lock_frontmatter(data.decode("utf-8"))
-            if problem:
-                report.problems.append(f"{name} {problem}")
-            else:
-                files[f"skills/{name}/SKILL.md"] = (text.encode("utf-8"), mode)
-                report.locked.append(name)
-        if name in locked:
-            locked.discard(name)
-            data, mode = files[f"skills/{name}/SKILL.md"]
-            text, problem = unlock_frontmatter(data.decode("utf-8"), config["descriptionSuffix"])
-            if problem:
-                report.problems.append(f"{name} {problem}")
-            else:
-                files[f"skills/{name}/SKILL.md"] = (text.encode("utf-8"), mode)
-                report.unlocked.append(name)
-    report.problems += [f"{name} is not a skill upstream ships; drop it from unlock" for name in sorted(locked)]
-    report.problems += [f"{name} is not a skill upstream ships; drop it from lock" for name in sorted(hidden)]
-    report.problems += stranded_calls(files, report.locked)
+                files[f"skills/{name}/{path.relative_to(source).as_posix()}"] = (path.read_bytes(), stored_mode(path))
+        texts[name] = files[f"skills/{name}/SKILL.md"][0].decode("utf-8")
+    report.problems += [f"a playbook names {name}, which upstream does not ship" for name in sorted(used - texts.keys())]
+    startable = startable_skills(used & texts.keys(), texts)
+    for name, text in sorted(texts.items()):
+        if (name in startable) != is_locked(text):
+            continue
+        if name in startable:
+            changed, problem = unlock_frontmatter(text, config["descriptionSuffix"])
+            (report.problems if problem else report.unlocked).append(f"{name} {problem}" if problem else name)
+        else:
+            changed, problem = lock_frontmatter(text)
+            (report.problems if problem else report.locked).append(f"{name} {problem}" if problem else name)
+        if changed:
+            files[f"skills/{name}/SKILL.md"] = (changed.encode("utf-8"), files[f"skills/{name}/SKILL.md"][1])
+    for name in sorted(texts):
+        agent_file = f"skills/{name}/{CODEX_AGENT_FILE}"
+        if agent_file not in files:
+            if name not in startable:
+                report.problems.append(f"{name} has no {CODEX_AGENT_FILE}, so Codex may start it unasked")
+            continue
+        data, mode = files[agent_file]
+        policy, problem = codex_policy(data.decode("utf-8"), name in startable)
+        if problem:
+            report.problems.append(f"{name} {problem}")
+        else:
+            files[agent_file] = (policy.encode("utf-8"), mode)
     license_file = upstream / "LICENSE"
     files["LICENSE"] = (license_file.read_bytes(), stored_mode(license_file))
     return files, report, manifest["version"]
 
 
-def stranded_calls(files, locked_here):
-    """Name each skill the model can start that calls one this port took away from the model."""
-    skills = {path.split("/")[1]: data.decode("utf-8") for path, (data, _) in files.items() if path.endswith("/SKILL.md")}
-    return [
-        f"{caller} calls {name}, which lock keeps from the model; drop {name} from lock"
-        for name in locked_here
-        for caller, text in sorted(skills.items())
-        if caller != name and not is_locked(text) and called_through_skill_tool(name, text)
-    ]
+def skills_named(value, prefix):
+    """Collect every "skill" a set names for this plugin, wherever it sits in the set."""
+    if isinstance(value, dict):
+        own = value.get("skill")
+        found = {own.removeprefix(prefix)} if isinstance(own, str) and own.startswith(prefix) else set()
+        return found.union(*(skills_named(item, prefix) for item in value.values()))
+    if isinstance(value, list):
+        return set().union(*(skills_named(item, prefix) for item in value))
+    return set()
+
+
+def used_by_playbooks(link):
+    """Return this plugin's skills that the linked playbook sets name, from the sibling checkout when there is one."""
+    local = ROOT / link["local"] if link.get("local") else None
+    with tempfile.TemporaryDirectory() as scratch:
+        if local and (local / link["sets"]).is_dir():
+            directory = local / link["sets"]
+        else:
+            git("clone", "--quiet", "--depth=1", link["repository"], scratch)
+            directory = Path(scratch) / link["sets"]
+        return skills_named([read_json(path) for path in sorted(directory.glob("*.json"))], link["plugin"] + ":")
 
 
 def current_files():
@@ -240,8 +273,8 @@ def render(report, old, new, upstream_version, version):
         ("Added skills", report.added),
         ("Removed skills", report.removed),
         ("Changed skills", report.changed),
-        ("Unlocked for playbooks", report.unlocked),
-        ("Kept for the user only", report.locked),
+        ("Opened for playbooks", report.unlocked),
+        ("Reserved for the user", report.locked),
     ]
     moved = old[:7] if old == new else f"{old[:7]} -> {new[:7]}"
     lines = [f"mattpocock/skills {moved} (upstream {upstream_version}), plugin version {version}", ""]
@@ -274,15 +307,15 @@ def main():
         cache.mkdir()
         new = fetch(repository, args.ref or old, cache)
         export(cache, new, Path(scratch) / "upstream")
-        files, report, upstream_version = build(Path(scratch) / "upstream", config)
+        files, report, upstream_version = build(Path(scratch) / "upstream", config, used_by_playbooks(config["playbooks"]))
 
     before = current_files()
     if args.check:
-        problems = report.problems + (["plugin/ differs from what port.json generates; run scripts/port.py"] if before != files else [])
+        problems = report.problems + (["plugin/ differs from what port.json and the playbooks generate; run scripts/port.py"] if before != files else [])
         manifest_version()
         if problems:
             raise PortError("\n".join(problems))
-        print("plugin/ is what port.json generates, and the manifests agree.")
+        print("plugin/ is what port.json and the playbooks generate, and the manifests agree.")
         return
 
     compare(before, files, report)

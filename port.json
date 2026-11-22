@@ -2,19 +2,11 @@
   "repository": "https://github.com/mattpocock/skills.git",
   "commit": "abeeaf95660ba9e8b7c753eb38f441ca707a8823",
   "manifest": ".claude-plugin/plugin.json",
-  "unlock": [
-    "to-questionnaire",
-    "handoff",
-    "grill-with-docs",
-    "to-spec",
-    "to-tickets",
-    "wayfinder",
-    "implement",
-    "implement-spec",
-    "grill-me"
-  ],
-  "lock": [
-    "writing-for-agents"
-  ],
+  "playbooks": {
+    "repository": "https://github.com/vladimir-fsh/flows-bob.git",
+    "local": "../flows-bob",
+    "sets": "sets",
+    "plugin": "matt"
+  },
   "descriptionSuffix": " Use only when a playbook or the user names this skill."
 }
