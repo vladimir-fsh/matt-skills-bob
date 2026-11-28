@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/mattpocock/skills.git",
-  "commit": "abeeaf95660ba9e8b7c753eb38f441ca707a8823",
+  "commit": "bbadaa631c37af594e5a05c9cefacd9956136b18",
   "manifest": ".claude-plugin/plugin.json",
   "playbooks": {
     "repository": "https://github.com/vladimir-fsh/flows-bob.git",
